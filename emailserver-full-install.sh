@@ -336,21 +336,23 @@ else
   echo -e "${YELLOW}✓ Kernel TCP optimizasyonları zaten yapılandırılmış${NC}"
 fi
 
-# Journald limitleri
-if [ ! -f /etc/systemd/journald.conf.d/limits.conf ]; then
+# Journald log boyut yönetimi
+mkdir -p /etc/systemd/journald.conf.d
+if [ ! -f /etc/systemd/journald.conf.d/size-limit.conf ]; then
   echo "Journald log yönetimi yapılandırılıyor..."
-  mkdir -p /etc/systemd/journald.conf.d
-  cat > /etc/systemd/journald.conf.d/limits.conf << 'JOURNAL_EOF'
+  cat > /etc/systemd/journald.conf.d/size-limit.conf <<'EOF'
 [Journal]
 SystemMaxUse=500M
 SystemKeepFree=1G
 SystemMaxFileSize=100M
 MaxRetentionSec=7day
-JOURNAL_EOF
+EOF
   systemctl restart systemd-journald
 else
-  echo -e "${YELLOW}✓ Journald limitleri zaten yapılandırılmış${NC}"
+  echo -e "${YELLOW}✓ Journald log yönetimi zaten yapılandırılmış${NC}"
 fi
+echo "journald disk kullanımı:"
+journalctl --disk-usage
 
 # Logrotate optimizasyonu
 if [ ! -f /etc/logrotate.d/mailcow ]; then
@@ -381,7 +383,68 @@ fi
 
 echo -e "${GREEN}Sistem optimizasyonları tamamlandı${NC}"
 
-echo -e "\n${GREEN}[13/14] Yardımcı araçlar oluşturuluyor...${NC}"
+echo -e "\n${GREEN}[13/14] Otomatik bakım mekanizmaları yapılandırılıyor...${NC}"
+
+# apt autoremove otomasyonu (haftalık)
+if [ ! -f /etc/cron.weekly/apt-autoremove ]; then
+  echo "apt autoremove cron job oluşturuluyor..."
+  cat > /etc/cron.weekly/apt-autoremove <<'EOF'
+#!/bin/bash
+# Otomatik kullanılmayan paket temizliği
+/usr/bin/apt-get autoremove -y >/dev/null 2>&1
+/usr/bin/apt-get autoclean -y >/dev/null 2>&1
+EOF
+  chmod +x /etc/cron.weekly/apt-autoremove
+else
+  echo -e "${YELLOW}✓ apt autoremove cron job zaten mevcut${NC}"
+fi
+
+# Disk temizliği (haftalık - /tmp, eski loglar)
+if [ ! -f /etc/cron.weekly/system-cleanup ]; then
+  echo "Sistem temizliği cron job oluşturuluyor..."
+  cat > /etc/cron.weekly/system-cleanup <<'EOF'
+#!/bin/bash
+# Otomatik disk temizliği
+# /tmp dizinindeki 7 günden eski dosyaları temizle
+find /tmp -type f -atime +7 -delete 2>/dev/null
+find /tmp -type d -empty -delete 2>/dev/null
+
+# Eski kernel paketlerini temizle (en son 2 kernel'i koru)
+OLD_KERNELS=$(dpkg -l | grep -E 'linux-image-[0-9]' | grep -v $(uname -r | sed 's/-generic//') | awk '{print $2}' | head -n -2)
+if [ -n "$OLD_KERNELS" ]; then
+  apt-get purge -y $OLD_KERNELS >/dev/null 2>&1
+fi
+EOF
+  chmod +x /etc/cron.weekly/system-cleanup
+else
+  echo -e "${YELLOW}✓ Sistem temizliği cron job zaten mevcut${NC}"
+fi
+
+# Sistem sağlık kontrolü (günlük - disk kullanımı uyarısı)
+if [ ! -f /etc/cron.daily/system-health-check ]; then
+  echo "Sistem sağlık kontrolü cron job oluşturuluyor..."
+  cat > /etc/cron.daily/system-health-check <<'EOF'
+#!/bin/bash
+# Disk kullanımı kontrolü ve uyarı
+DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+if [ "$DISK_USAGE" -gt 85 ]; then
+  echo "UYARI: Disk kullanımı %${DISK_USAGE} - Kritik seviyeye yaklaşıyor!" | logger -t system-health
+fi
+
+# Swap kullanımı kontrolü
+SWAP_USAGE=$(free | awk '/^Swap:/ {if ($2>0) printf "%.0f", $3*100/$2; else print "0"}')
+if [ "$SWAP_USAGE" -gt 80 ]; then
+  echo "UYARI: Swap kullanımı %${SWAP_USAGE} - RAM yetersiz olabilir!" | logger -t system-health
+fi
+EOF
+  chmod +x /etc/cron.daily/system-health-check
+else
+  echo -e "${YELLOW}✓ Sistem sağlık kontrolü cron job zaten mevcut${NC}"
+fi
+
+echo -e "${GREEN}Otomatik bakım mekanizmaları yapılandırıldı${NC}"
+
+echo -e "\n${GREEN}[14/15] Yardımcı araçlar oluşturuluyor...${NC}"
 
 # Mailcow dizinine geç (zaten oradayız ama emin olmak için)
 cd /opt/mailcow-dockerized 2>/dev/null || {
@@ -402,7 +465,7 @@ else
 fi
 
 
-echo -e "\n${GREEN}[14/14] Kurulum özeti${NC}"
+echo -e "\n${GREEN}[15/15] Kurulum özeti${NC}"
 
 echo -e "\n${GREEN}═══════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}✓ Kurulum başarıyla tamamlandı!${NC}"
